@@ -1,0 +1,296 @@
+# ***************************************
+# ****** First VPC creation tasks *******
+# ***************************************
+resource "aws_vpc" "main_vpc" {
+    cidr_block = "10.0.0.0/16"
+    instance_tenancy = "default"
+
+    tags = {
+        Name = "Main_VPC"
+    }  
+}
+
+# ***************************************************
+# ***** IGW creatioion & attachment to the VPC ******
+# ***************************************************
+resource "aws_internet_gateway" "main_vpc_IGW" {
+   vpc_id = aws_vpc.main_vpc.id 
+
+   tags = {
+    Name = "Main VPC IGW"
+   }
+}
+
+# ***************************************
+# *** Subnets association to the VPC ****
+# ***************************************
+resource "aws_subnet" "MVPC-Public-Subnet" {
+    vpc_id = aws_vpc.main_vpc.id
+    availability_zone = "us-west-1a"
+    cidr_block = "10.0.0.0/24"
+    map_public_ip_on_launch = true
+
+    tags = {
+        Name = "MVPC-Public-Subnet"
+    }
+}
+resource "aws_subnet" "MVPC-Private-Subnet" {
+    vpc_id = aws_vpc.main_vpc.id
+    availability_zone = "us-west-1a"
+    cidr_block = "10.0.1.0/24"
+    map_public_ip_on_launch = false
+
+    tags = {
+        Name = "MVPC-Private-Subnet"
+    }
+}
+
+resource "aws_route" "default_route" {
+    route_table_id = aws_vpc.main_vpc.main_route_table_id
+    destination_cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main_vpc_IGW.id
+}
+
+resource "aws_route_table_association" "a" {
+    subnet_id = aws_subnet.MVPC-Public-Subnet.id
+    route_table_id = aws_route.default_route.route_table_id
+    
+}
+
+
+# ***************************************
+# ***** Second VPC creation tasks *******
+# ***************************************
+
+resource "aws_vpc" "Secondary_vpc" {
+    cidr_block = "10.10.0.0/16"
+    instance_tenancy = "default"
+
+    tags = {
+        Name = "Secondary_VPC"
+    }  
+}
+# ***************************************
+# *** Subnets association to the VPC ****
+# ***************************************
+
+resource "aws_subnet" "SVPC-Subnet_A" {
+    vpc_id = aws_vpc.Secondary_vpc.id
+    availability_zone = "us-west-1a"
+    cidr_block = "10.10.0.0/24"
+    map_public_ip_on_launch = false
+
+    tags = {
+        Name = "SVPC-Subnet_A-Private"
+    }
+}
+
+# ***************************************
+# *** EC2 Instances Sec Group creation **
+# ***************************************
+resource "aws_security_group" "JumpHost-SG"{
+    name = "Allow_ssh"
+    description = "Allow SSH traffic"
+    vpc_id = aws_vpc.main_vpc.id
+
+    ingress {
+        from_port = 22
+        to_port = 22
+        protocol = "tcp"
+        cidr_blocks = ["0.0.0.0/0", "${chomp(data.http.my_public_ip.body)}/32"]
+        
+    }
+
+    egress  {
+        from_port = 0
+        to_port = 0
+        protocol = "-1"
+        cidr_blocks = ["0.0.0.0/0"]
+    }
+
+    tags = {
+        Name = "Allow_SSH"
+    }
+    
+}
+resource "aws_security_group" "PNet-MainVPC"{
+    name = "Allow SSH & ICMP Traffic"
+    description = "Allow SSH/ICMP traffic"
+    vpc_id = aws_vpc.main_vpc.id
+
+    ingress {
+        from_port = 22
+        to_port = 22
+        protocol = "tcp"
+        cidr_blocks = ["10.0.0.0/16", "10.10.0.0/16"]        
+    }
+
+    ingress {
+        from_port = 8
+        to_port = 0
+        protocol = "icmp"
+        cidr_blocks = ["10.0.0.0/16", "10.10.0.0/16"]        
+    }
+
+    egress  {
+        from_port = 0
+        to_port = 0
+        protocol = "-1"
+        cidr_blocks = ["0.0.0.0/0"]
+    }
+
+    tags = {
+        Name = "Allow_SSH-ICMP"
+    }
+    
+}
+resource "aws_security_group" "PNet-SecondVPC"{
+    name = "Allow SSH & ICMP Traffic"
+    description = "Allow SSH/ICMP traffic"
+    vpc_id = aws_vpc.Secondary_vpc.id
+
+    ingress {
+        from_port = 22
+        to_port = 22
+        protocol = "tcp"
+        cidr_blocks = ["10.0.0.0/16", "10.10.0.0/16"]        
+    }
+
+    ingress {
+        from_port = 8
+        to_port = 0
+        protocol = "icmp"
+        cidr_blocks = ["10.0.0.0/16", "10.10.0.0/16"]       
+    }
+
+    egress  {
+        from_port = 0
+        to_port = 0
+        protocol = "-1"
+        cidr_blocks = ["0.0.0.0/0"]
+    }
+
+    tags = {
+        Name = "Allow_SSH-ICMP"
+    }
+    
+}
+
+# ***************************************
+# *** Network Interfaces ****************
+# ***************************************
+resource "aws_network_interface" "JumpHost_NIC0" {
+    subnet_id = aws_subnet.MVPC-Public-Subnet.id
+    private_ip = aws_subnet.MVPC-Private-Subnet.cidr_block
+    security_groups = [aws_security_group.JumpHost-SG.id]
+
+    tags = {
+      Name = "Network Interface 0"
+    }
+}
+resource "aws_network_interface" "EC2-Private-HostA" {
+    subnet_id = aws_subnet.MVPC-Private-Subnet.id
+    private_ip = aws_subnet.MVPC-Private-Subnet.cidr_block
+    security_groups = [aws_security_group.PNet-MainVPC.id]
+
+    tags = {
+      Name = "Network Interface 0"
+    }
+}
+
+resource "aws_network_interface" "EC2-Private-HostB" {
+    subnet_id = aws_subnet.SVPC-Subnet_A.id
+    private_ip = aws_subnet.SVPC-Subnet_A.cidr_block
+    security_groups = [aws_security_group.PNet-SecondVPC.id]
+
+    tags = {
+      Name = "Network Interface 0"
+    }
+}
+
+# ***************************************
+# *** Public Key creation & Mapping **
+# ***************************************
+# RSA key of size 4096 bits - create a private & public key
+resource "tls_private_key" "TF_keyPair" {
+  algorithm = "RSA"
+  rsa_bits  = 4096
+
+}
+
+# Create a private & public key and store local
+resource "local_file" "TF_Key" {
+    content  = tls_private_key.TF_keyPair.private_key_pem
+    filename = "../TF_KeyPair.pem"
+    file_permission = "600"
+    
+}
+
+resource "aws_key_pair" "TF_keyPair" {
+    key_name = "TF_keyPair.pem"
+    public_key = tls_private_key.TF_keyPair.public_key_openssh
+
+}
+
+# ***************************************
+# *** EC2 Instances creation **
+# ***************************************
+
+resource "aws_instance" "JumpHost" {
+    ami = "ami-0e4d9ed95865f3b40"
+    instance_type = "t2.micro"
+    key_name = aws_key_pair.TF_keyPair.key_name
+    #associate_public_ip_address = true
+
+    tags = {
+      Name = "JumpHost"
+    }
+
+    network_interface {
+      network_interface_id = aws_network_interface.JumpHost_NIC0.id
+      device_index = 0
+    }
+}
+
+resource "aws_instance" "MainVPC-EC2" {
+    ami = "ami-0e4d9ed95865f3b40"
+    instance_type = "t2.micro"
+    key_name = aws_key_pair.TF_keyPair.key_name
+    #associate_public_ip_address = true
+
+    tags = {
+      Name = "MainVPC-EC2"
+    }
+
+    network_interface {
+      network_interface_id = aws_network_interface.EC2-Private-HostA.id
+      device_index = 0
+    }
+}
+
+resource "aws_instance" "SecondVPC-EC2" {
+    ami = "ami-0e4d9ed95865f3b40"
+    instance_type = "t2.micro"
+    key_name = aws_key_pair.TF_keyPair.key_name
+    #associate_public_ip_address = true
+
+    tags = {
+      Name = "SecondVPC-EC2"
+    }
+
+    network_interface {
+      network_interface_id = aws_network_interface.EC2-Private-HostB.id
+      device_index = 0
+    }
+}
+
+data "http" "my_public_ip" {
+  url = "http://ipv4.icanhazip.com"
+
+}
+
+
+
+
+
+
